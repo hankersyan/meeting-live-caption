@@ -46,16 +46,26 @@ Before using the application, ensure you have:
    - **File Label**: Shows current file status
    - **Open Records Folder Button**: Opens the output directory
 
-3. **Action Buttons**
+3. **Key Point Extraction (Ollama)**
+   - **Enable**: Turn periodic extraction on/off
+   - **URL**: Ollama API base URL (default: `http://localhost:11434`)
+   - **Model**: Ollama model name to use for extraction
+   - **Refresh(s)**: Interval in seconds between extraction runs
+   - **Prompt**: Instruction used to generate brief key points
+
+4. **Action Buttons**
    - **Start Recording**: Begin audio capture and transcription
    - **Stop Recording**: End recording session
    - **Clear Text**: Clear the transcription display
 
-4. **Status Bar**
+5. **Status Bar**
    - Shows current application state and messages
 
-5. **Transcription Display**
+6. **Transcription Display**
    - Scrollable text area showing live transcription
+
+7. **Brief Key Points Display**
+   - Scrollable text area showing timestamped key-point summaries
 
 ## Detailed Usage Instructions
 
@@ -79,13 +89,21 @@ Before using the application, ensure you have:
 2. Files will be saved in the 'records' folder with timestamped names
 3. Click "Open Records Folder" to access saved files
 
-### Step 4: Start Recording
+### Step 4: Configure Key Point Extraction
+1. Enable key-point extraction if you want live summaries
+2. Set Ollama URL (local default: `http://localhost:11434`)
+3. Set model name (example: `llama3.1:8b`)
+4. Set refresh interval in seconds (example: `20`)
+5. Customize the extraction prompt if needed
+
+### Step 5: Start Recording
 1. Click "Start Recording"
 2. The application will begin capturing audio and transcribing speech
 3. Watch the status bar for progress indicators
 4. Live transcription appears in the text area
+5. Brief key points are updated periodically in the key-points area
 
-### Step 5: Stop and Review
+### Step 6: Stop and Review
 1. Click "Stop Recording" when finished
 2. Check the 'records' folder for saved files
 3. Review both audio (WAV) and text (TXT) outputs

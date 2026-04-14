@@ -6,7 +6,7 @@ This document describes the technical implementation of the Meeting Live Caption
 
 ## Architecture
 
-The application follows a multi-threaded design with three main components:
+The application follows a multi-threaded design with four main components:
 
 ### 1. AudioRecorder Class
 
@@ -50,10 +50,21 @@ Provides the GUI interface with these capabilities:
 - File management and folder access
 - Threading coordination
 
+### 4. KeyPointExtractor Class
+
+Performs periodic LLM-based summarization of recent captions using Ollama:
+- Pulls recent live caption text from in-memory history
+- Calls Ollama `/api/generate` with configurable URL, model, and prompt
+- Runs at a configurable refresh interval
+- Updates GUI with timestamped brief key-point summaries
+- Uses a dedicated thread and stop event for clean shutdown
+
 ## Audio Processing Pipeline
 
 ```
 System Audio → WASAPI Loopback → AudioRecorder → Resample → Queue → Transcriber → Whisper → Text Output
+                                                                                       ↓
+                                                                            KeyPointExtractor → Ollama → Key Points
                                             ↓
                                         WAV File
 ```
@@ -84,6 +95,12 @@ The pipeline ensures low-latency processing through:
 - `language`: Target language ("en", "zh", "es", etc. or "auto")
 - `beam_size`: Beam search parameter (default: 5)
 - `best_of`: Best-of parameter for beam search (default: 5)
+
+### KeyPointExtractor / Ollama
+- `ollama_url`: Base URL for Ollama API (default: `http://localhost:11434`)
+- `ollama_model`: Model name used for extraction (default: `llama3.1:8b`)
+- `extract_prompt`: Prompt template used to extract key points
+- `extract_interval`: Refresh interval in seconds (default: 20)
 
 ## File Management
 

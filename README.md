@@ -9,6 +9,7 @@ Real-time Meeting Audio and Text Recorder. This application records system audio
 - Real-time audio recording
 - Live speech-to-text transcription
 - Simultaneous saving of audio (WAV) and text (TXT) files
+- Brief key-point extraction from live captions using Ollama
 - Support for multiple Whisper models and languages
 - Speaker Diarization (TODO)
 
@@ -21,6 +22,10 @@ Real-time Meeting Audio and Text Recorder. This application records system audio
   - `pyaudiowpatch`
   - `numpy`
   - `tkinter` (usually comes with Python)
+
+Optional for key-point extraction:
+- [Ollama](https://ollama.com/) running locally or remotely
+- A pulled model (example: `ollama pull llama3.1:8b`)
 
 ## Installation
 
@@ -41,10 +46,16 @@ Real-time Meeting Audio and Text Recorder. This application records system audio
 3. Choose the Whisper model size (tiny, base, small, medium, large-v2, large-v3)
 4. Select the transcription language (en, zh, es, fr, de, ja, ko, auto)
 5. Toggle whether to save audio and text files
-6. Click "Start Recording" to begin live captioning
-7. View the live transcription in the text area
-8. Click "Stop Recording" when finished
-9. Find your saved files in the 'records' folder
+6. Configure key-point extraction:
+   - Enable checkbox
+   - Ollama URL (example: `http://localhost:11434`)
+   - Model name (example: `llama3.1:8b`)
+   - Refresh interval in seconds
+   - Prompt used to extract key points
+7. Click "Start Recording" to begin live captioning
+8. View live transcription and periodic brief key points
+9. Click "Stop Recording" when finished
+10. Find your saved files in the 'records' folder
 
 ## Configuration Options
 
@@ -52,6 +63,10 @@ Real-time Meeting Audio and Text Recorder. This application records system audio
 - **Model Size**: Choose between tiny, base, small, medium, or large Whisper models
 - **Language**: Specify the language for transcription or use "auto" for automatic detection
 - **Save Files**: Option to save both audio and text files to the 'records' folder
+- **Ollama URL**: API endpoint for key-point extraction requests
+- **Ollama Model**: Model used to summarize live captions
+- **Extraction Prompt**: Custom instruction prompt for key-point style
+- **Refresh Interval**: How often key points are regenerated from recent captions
 
 ## File Structure
 
