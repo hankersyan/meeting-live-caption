@@ -2,7 +2,7 @@
   "dark_mode": false,
   "whisper_device": "cpu",
   "whisper_local_files_only": true,
-  "extract_enabled": false,
+  "extract_enabled": true,
   "ollama_url": "http://localhost:11434",
   "ollama_model": "LiquidAI/lfm2.5-1.2b-instruct",
   "extract_prompt": "Extract brief key points from the meeting captions. Use concise bullet points and avoid repetition.",

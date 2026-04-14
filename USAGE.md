@@ -92,7 +92,7 @@ Before using the application, ensure you have:
 ### Step 4: Configure Key Point Extraction
 1. Enable key-point extraction if you want live summaries
 2. Set Ollama URL (local default: `http://localhost:11434`)
-3. Set model name (example: `llama3.1:8b`)
+3. Set model name (example: `LiquidAI/lfm2.5-1.2b-instruct`)
 4. Set refresh interval in seconds (example: `20`)
 5. Customize the extraction prompt if needed
 

@@ -25,7 +25,7 @@ Real-time Meeting Audio and Text Recorder. This application records system audio
 
 Optional for key-point extraction:
 - [Ollama](https://ollama.com/) running locally or remotely
-- A pulled model (example: `ollama pull llama3.1:8b`)
+- A pulled model (example: `ollama pull LiquidAI/lfm2.5-1.2b-instruct`)
 
 ## Installation
 
@@ -47,9 +47,9 @@ Optional for key-point extraction:
 4. Select the transcription language (en, zh, es, fr, de, ja, ko, auto)
 5. Toggle whether to save audio and text files
 6. Configure key-point extraction:
-   - Enable checkbox
-   - Ollama URL (example: `http://localhost:11434`)
-   - Model name (example: `llama3.1:8b`)
+      - Enable checkbox
+      - Ollama URL (example: `http://localhost:11434`)
+      - Model name (example: `LiquidAI/lfm2.5-1.2b-instruct`)
    - Refresh interval in seconds
    - Prompt used to extract key points
 7. Click "Start Recording" to begin live captioning

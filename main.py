@@ -476,7 +476,7 @@ class MeetingRecorderApp:
         self.ollama_url_entry.grid(row=0, column=2, sticky=tk.W, padx=(5, 10))
 
         ttk.Label(self.extract_cfg, text="Model:").grid(row=0, column=3, sticky=tk.W)
-        self.ollama_model_var = tk.StringVar(value="llama3.1:8b")
+        self.ollama_model_var = tk.StringVar(value="LiquidAI/lfm2.5-1.2b-instruct")
         self.ollama_model_entry = ttk.Entry(self.extract_cfg, textvariable=self.ollama_model_var, width=18)
         self.ollama_model_entry.grid(row=0, column=4, sticky=tk.W, padx=(5, 10))
 
@@ -937,17 +937,64 @@ class MeetingRecorderApp:
 
             Ollama's numeric `context` field is token history, not decodable output text.
             """
-            message = data.get("message") if isinstance(data, dict) else None
-            candidates = [
-                data.get("response") if isinstance(data, dict) else None,
-                message.get("content") if isinstance(message, dict) else None,
-                data.get("text") if isinstance(data, dict) else None,
-                data.get("output_text") if isinstance(data, dict) else None,
-            ]
+            # Flexible extractor that walks common response shapes used by Ollama
+            def extract(item):
+                if not item:
+                    return ""
+                # strings are direct
+                if isinstance(item, str):
+                    return item
+                # lists: join extracted parts
+                if isinstance(item, list):
+                    parts = [extract(x) for x in item]
+                    return "\n".join([p for p in parts if p])
+                # dicts: look for common fields
+                if isinstance(item, dict):
+                    # common direct text fields
+                    for key in ("response", "text", "output_text", "output", "body"):
+                        if key in item and item[key]:
+                            return extract(item[key])
+                    # nested message/content style
+                    if "message" in item:
+                        return extract(item["message"])
+                    if "content" in item:
+                        return extract(item["content"])
+                    # OpenAI-like choices
+                    if "choices" in item and isinstance(item["choices"], list):
+                        return extract(item["choices"]) 
+                    # Ollama may return `outputs` or `results`
+                    if "outputs" in item and isinstance(item["outputs"], list):
+                        return extract(item["outputs"]) 
+                    if "results" in item and isinstance(item["results"], list):
+                        return extract(item["results"]) 
+                # Fallback: nothing extractable
+                return ""
+
+            # Try a set of likely top-level candidates first, then fall back to scanning values
+            candidates = []
+            if isinstance(data, str):
+                candidates.append(data)
+            if isinstance(data, dict):
+                for k in ("response", "text", "output_text", "output", "message", "content", "results", "choices", "outputs"):
+                    if k in data:
+                        candidates.append(data[k])
+                # also include the whole dict as last resort
+                candidates.append(data)
+
             for item in candidates:
-                cleaned = clean_ollama_text(item)
+                out = extract(item)
+                cleaned = clean_ollama_text(out)
                 if cleaned:
                     return cleaned
+
+            # As a final fallback, scan all string values in the dict
+            if isinstance(data, dict):
+                for v in data.values():
+                    out = extract(v)
+                    cleaned = clean_ollama_text(out)
+                    if cleaned:
+                        return cleaned
+
             return ""
 
         def build_generate_payload(captions_excerpt, disable_think=False):

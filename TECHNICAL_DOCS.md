@@ -98,7 +98,7 @@ The pipeline ensures low-latency processing through:
 
 ### KeyPointExtractor / Ollama
 - `ollama_url`: Base URL for Ollama API (default: `http://localhost:11434`)
-- `ollama_model`: Model name used for extraction (default: `llama3.1:8b`)
+- `ollama_model`: Model name used for extraction (default: `LiquidAI/lfm2.5-1.2b-instruct`)
 - `extract_prompt`: Prompt template used to extract key points
 - `extract_interval`: Refresh interval in seconds (default: 20)
 
