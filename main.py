@@ -392,6 +392,16 @@ class MeetingRecorderApp:
         self._config_save_after_id = None
         self.style = ttk.Style()
         
+        # Bounds and batching for long-running stability
+        self.MAX_CAPTION_HISTORY_CHARS = 200000
+        self.MAX_TEXT_AREA_CHARS = 5000
+        self.MAX_KEY_POINTS_CHARS = 2000
+        self.FLUSH_INTERVAL_MS = 200
+        
+        self._pending_lock = threading.Lock()
+        self._pending_text_buffer = []
+        self._flush_after_id = None
+        
         self.setup_ui()
         self.load_config()
         self.setup_config_autosave()
@@ -713,6 +723,19 @@ class MeetingRecorderApp:
         if not self.is_recording:
             return
         self.status_var.set("Stopping...")
+        # Cancel pending flush and drain buffer so no text is lost
+        with self._pending_lock:
+            if self._flush_after_id is not None:
+                try:
+                    self.root.after_cancel(self._flush_after_id)
+                except Exception:
+                    pass
+                self._flush_after_id = None
+            final_buffer = self._pending_text_buffer
+            self._pending_text_buffer = []
+        if final_buffer:
+            self._append_text_impl("".join(final_buffer))
+        
         if self.transcriber:
             self.transcriber.stop()
             self.transcriber = None
@@ -754,11 +777,35 @@ class MeetingRecorderApp:
         with self.caption_lock:
             self.full_transcription_text += text
             self.caption_total_chars += len(text)
-        self.root.after(0, self._append_text_impl, text)
+            if len(self.full_transcription_text) > self.MAX_CAPTION_HISTORY_CHARS:
+                self.full_transcription_text = self.full_transcription_text[-self.MAX_CAPTION_HISTORY_CHARS:]
+        
+        with self._pending_lock:
+            self._pending_text_buffer.append(text)
+            if self._flush_after_id is None:
+                self._flush_after_id = self.root.after(self.FLUSH_INTERVAL_MS, self._flush_pending_text)
+    
+    def _flush_pending_text(self):
+        with self._pending_lock:
+            self._flush_after_id = None
+            buffer = self._pending_text_buffer
+            self._pending_text_buffer = []
+        
+        if buffer:
+            self._append_text_impl("".join(buffer))
+    
+    def _trim_widget(self, widget, max_chars):
+        """Remove oldest content from a text widget when it exceeds max_chars."""
+        content = widget.get(1.0, tk.END)
+        if len(content) > max_chars:
+            trim_chars = len(content) - max_chars
+            end_trim = widget.index(f"1.0 + {trim_chars} chars")
+            widget.delete(1.0, end_trim)
     
     def _append_text_impl(self, text):
         self.text_area.insert(tk.END, text)
         self.text_area.see(tk.END)
+        self._trim_widget(self.text_area, self.MAX_TEXT_AREA_CHARS)
 
     def append_key_points(self, text):
         self.root.after(0, self._append_key_points_impl, text)
@@ -767,6 +814,7 @@ class MeetingRecorderApp:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.key_points_area.insert(tk.END, f"[{timestamp}]\n{text.strip()}\n\n")
         self.key_points_area.see(tk.END)
+        self._trim_widget(self.key_points_area, self.MAX_KEY_POINTS_CHARS)
 
     def get_recent_captions(self):
         with self.caption_lock:
@@ -1120,6 +1168,13 @@ class MeetingRecorderApp:
         if self._config_save_after_id is not None:
             self.root.after_cancel(self._config_save_after_id)
             self._config_save_after_id = None
+        with self._pending_lock:
+            if self._flush_after_id is not None:
+                try:
+                    self.root.after_cancel(self._flush_after_id)
+                except Exception:
+                    pass
+                self._flush_after_id = None
         self.save_config()
         self.stop_recording()
         self.root.destroy()

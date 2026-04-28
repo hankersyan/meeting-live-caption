@@ -16,6 +16,7 @@ def transcribe_audio(file_path, model_size="large-v3", device="cuda", compute_ty
 
     # Perform transcription
     segments, info = model.transcribe(file_path, beam_size=5)
+    segments = list(segments)
 
     print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
 
