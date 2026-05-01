@@ -53,7 +53,15 @@ Before using the application, ensure you have:
    - **Refresh(s)**: Interval in seconds between extraction runs
    - **Prompt**: Instruction used to generate brief key points
 
-4. **Action Buttons**
+4. **Speaker Diarization (pyannote.audio)**
+   - **Enable**: Turn periodic speaker identification on/off
+   - **HF Token**: Your HuggingFace access token (required, get at huggingface.co/settings/tokens)
+   - **Interval(s)**: How often the diarization runs (default: 30s)
+   - **Max Speakers**: Maximum speakers to detect (0 = auto-detect)
+   - **Device**: CPU or CUDA for pyannote inference
+   - **Speaker-labeled Transcription**: Shows color-coded speaker labels for each transcribed segment
+
+5. **Action Buttons**
    - **Start Recording**: Begin audio capture and transcription
    - **Stop Recording**: End recording session
    - **Clear Text**: Clear the transcription display
@@ -96,17 +104,27 @@ Before using the application, ensure you have:
 4. Set refresh interval in seconds (example: `20`)
 5. Customize the extraction prompt if needed
 
-### Step 5: Start Recording
+### Step 5: Configure Speaker Diarization (Optional)
+1. Enable speaker diarization if you want speaker-labeled transcription
+2. Enter your HuggingFace access token (required for pyannote.audio model access)
+   - Get one at: https://huggingface.co/settings/tokens
+   - Accept the model terms at: https://huggingface.co/pyannote/speaker-diarization-3.1
+3. Set diarization interval (how often to re-identify speakers, default: 30s)
+4. Set max speakers (0 = auto-detect)
+5. Choose device (CPU recommended unless you have CUDA torch installed)
+
+### Step 6: Start Recording
 1. Click "Start Recording"
 2. The application will begin capturing audio and transcribing speech
 3. Watch the status bar for progress indicators
 4. Live transcription appears in the text area
 5. Brief key points are updated periodically in the key-points area
+6. Speaker-labeled transcription updates in the bottom panel (if diarization is enabled)
 
-### Step 6: Stop and Review
+### Step 7: Stop and Review
 1. Click "Stop Recording" when finished
 2. Check the 'records' folder for saved files
-3. Review both audio (WAV) and text (TXT) outputs
+3. Review audio (WAV), text (TXT), and speaker-labeled text (_labeled.txt) outputs
 
 ## Advanced Usage Tips
 

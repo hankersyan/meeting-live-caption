@@ -11,7 +11,7 @@ Real-time Meeting Audio and Text Recorder. This application records system audio
 - Simultaneous saving of audio (WAV) and text (TXT) files
 - Brief key-point extraction from live captions using Ollama
 - Support for multiple Whisper models and languages
-- Speaker Diarization (TODO)
+- **Speaker Diarization**: Automatic identification and labeling of different speakers using pyannote.audio
 
 ## Requirements
 
@@ -26,6 +26,10 @@ Real-time Meeting Audio and Text Recorder. This application records system audio
 Optional for key-point extraction:
 - [Ollama](https://ollama.com/) running locally or remotely
 - A pulled model (example: `ollama pull LiquidAI/lfm2.5-1.2b-instruct`)
+
+Optional for speaker diarization:
+- `pyannote.audio` and `torch` (install with `pip install pyannote.audio torch`)
+- A HuggingFace access token (free, accept model terms at https://huggingface.co/pyannote/speaker-diarization-3.1)
 
 ## Installation
 

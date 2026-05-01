@@ -14,7 +14,9 @@ import json
 import urllib.request
 import urllib.error
 import socket
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pyaudiowpatch as pyaudio
@@ -26,6 +28,98 @@ import subprocess
 
 # Whisper
 from faster_whisper import WhisperModel
+
+# Suppress noisy torchcodec warning from pyannote.audio (unneeded: we feed in-memory waveforms)
+import warnings
+warnings.filterwarnings("ignore", message="torchcodec is not installed correctly")
+
+# Optional: pyannote.audio for speaker diarization
+try:
+    from pyannote.audio import Pipeline
+    HAS_PYANNOTE = True
+except ImportError:
+    HAS_PYANNOTE = False
+
+
+# ------------------------------
+# Data Structures for Speaker Diarization
+# ------------------------------
+
+@dataclass
+class TranscriptionSegment:
+    """A single transcribed segment with timing and optional speaker label."""
+    start: float         # absolute start time (seconds)
+    end: float           # absolute end time (seconds)
+    text: str            # transcribed text content
+    speaker: Optional[str] = None  # speaker label (filled by LabelMapper)
+
+
+class SegmentStore:
+    """Thread-safe store for transcription segments."""
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._segments: List[TranscriptionSegment] = []
+    
+    def add(self, segment: TranscriptionSegment):
+        with self._lock:
+            self._segments.append(segment)
+    
+    def add_all(self, segments: List[TranscriptionSegment]):
+        with self._lock:
+            self._segments.extend(segments)
+    
+    def get_all(self) -> List[TranscriptionSegment]:
+        with self._lock:
+            return list(self._segments)
+    
+    def get_unlabeled(self) -> List[TranscriptionSegment]:
+        """Return segments that haven't been assigned a speaker label yet."""
+        with self._lock:
+            return [s for s in self._segments if s.speaker is None]
+    
+    def apply_speaker_labels(self, labels: List[Tuple[int, str]]):
+        """Apply speaker labels by segment index. labels = [(index, speaker), ...]"""
+        with self._lock:
+            for idx, speaker in labels:
+                if 0 <= idx < len(self._segments):
+                    self._segments[idx].speaker = speaker
+    
+    def clear(self):
+        with self._lock:
+            self._segments.clear()
+    
+    def __len__(self):
+        with self._lock:
+            return len(self._segments)
+
+
+class AudioBuffer:
+    """Ring buffer that accumulates mono audio for diarization processing."""
+    
+    def __init__(self, max_duration: float = 120.0, sample_rate: int = 16000):
+        self.max_samples = int(max_duration * sample_rate)
+        self.sample_rate = sample_rate
+        self._buffer = np.array([], dtype=np.int16)
+        self._lock = threading.Lock()
+    
+    def append(self, chunk: np.ndarray):
+        with self._lock:
+            self._buffer = np.concatenate([self._buffer, chunk])
+            if len(self._buffer) > self.max_samples:
+                self._buffer = self._buffer[-self.max_samples:]
+    
+    def get_audio(self) -> np.ndarray:
+        with self._lock:
+            return self._buffer.copy()
+    
+    def clear(self):
+        with self._lock:
+            self._buffer = np.array([], dtype=np.int16)
+    
+    def duration(self) -> float:
+        with self._lock:
+            return len(self._buffer) / self.sample_rate
 
 
 # ------------------------------
@@ -201,6 +295,8 @@ class Transcriber:
         records_folder="records",
         whisper_device="cpu",
         local_files_only=False,
+        segment_store: Optional[SegmentStore] = None,
+        audio_buffer: Optional[AudioBuffer] = None,
     ):
         self.recorder = recorder
         self.model_size = model_size
@@ -216,6 +312,12 @@ class Transcriber:
         self.text_file = None
         self.text_path = None
         
+        # Speaker diarization support
+        self.segment_store = segment_store
+        self.audio_buffer = audio_buffer
+        self._time_offset = 0.0       # cumulative absolute time (seconds)
+        self._overlap_duration = 0.5  # overlap between chunks
+        
     def set_text_callback(self, callback):
         self.text_callback = callback
         
@@ -223,6 +325,7 @@ class Transcriber:
         if self.is_running:
             return
         self.is_running = True
+        self._time_offset = 0.0
         
         # Prepare text file for writing
         base = self.recorder.get_base_filename()
@@ -273,8 +376,9 @@ class Transcriber:
                 self.text_callback(f"[Error] Failed to load model: {e}\n")
             return
         
-        overlap_samples = int(self.recorder.sample_rate * 0.5)
+        overlap_samples = int(self.recorder.sample_rate * self._overlap_duration)
         prev_chunk = np.array([], dtype=np.int16)
+        chunk_idx = 0
         
         while self.is_running:
             try:
@@ -282,6 +386,10 @@ class Transcriber:
                     audio_chunk = self.recorder.audio_queue.get(timeout=1.0)
                 except queue.Empty:
                     continue
+                
+                # Push raw audio to the diarization buffer
+                if self.audio_buffer is not None:
+                    self.audio_buffer.append(audio_chunk)
                 
                 if len(prev_chunk) > 0:
                     combined = np.concatenate([prev_chunk[-overlap_samples:], audio_chunk])
@@ -301,8 +409,25 @@ class Transcriber:
                 )
                 
                 full_text = ""
-                for segment in segments:
-                    full_text += segment.text
+                chunk_segments = []
+                
+                for seg in segments:
+                    # Calculate absolute timestamps
+                    if chunk_idx == 0:
+                        abs_start = seg.start
+                        abs_end = seg.end
+                    else:
+                        abs_start = self._time_offset - self._overlap_duration + seg.start
+                        abs_end = self._time_offset - self._overlap_duration + seg.end
+                    
+                    chunk_segments.append(TranscriptionSegment(
+                        start=abs_start, end=abs_end, text=seg.text
+                    ))
+                    full_text += seg.text
+                
+                # Store segments if store is available
+                if self.segment_store is not None and chunk_segments:
+                    self.segment_store.add_all(chunk_segments)
                 
                 if full_text.strip():
                     full_text = full_text.strip() + " "
@@ -313,6 +438,8 @@ class Transcriber:
                     self._save_text(full_text)
                 
                 prev_chunk = audio_chunk
+                self._time_offset += self.recorder.chunk_duration
+                chunk_idx += 1
                 
             except Exception as e:
                 print(f"Transcription error: {e}")
@@ -367,6 +494,202 @@ class KeyPointExtractor:
 
 
 # ------------------------------
+# Speaker Diarization (pyannote.audio)
+# ------------------------------
+
+def map_speakers_to_segments(
+    segments: List[TranscriptionSegment],
+    diarization_results: List[Tuple[float, float, str]],
+    time_eps: float = 0.3,
+) -> List[TranscriptionSegment]:
+    """
+    Map speaker labels from diarization results onto transcription segments
+    based on timestamp overlap.
+
+    Args:
+        segments: List of transcription segments with absolute timestamps.
+        diarization_results: List of (start, end, speaker_label) tuples.
+        time_eps: Minimum overlap duration (seconds) to assign a speaker.
+
+    Returns:
+        A new list of TranscriptionSegments with speaker labels filled in.
+    """
+    labeled = [TranscriptionSegment(s.start, s.end, s.text, None) for s in segments]
+
+    for seg in labeled:
+        best_speaker = None
+        max_overlap = 0.0
+        for d_start, d_end, speaker in diarization_results:
+            overlap_start = max(seg.start, d_start)
+            overlap_end = min(seg.end, d_end)
+            overlap = max(0.0, overlap_end - overlap_start)
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_speaker = speaker
+
+        if max_overlap >= time_eps and best_speaker is not None:
+            seg.speaker = best_speaker
+
+    return labeled
+
+
+class SpeakerDiarizer:
+    """
+    Periodically runs pyannote.audio speaker diarization on accumulated audio,
+    then maps results to transcription segments via LabelMapper.
+    """
+
+    def __init__(
+        self,
+        hf_token: str,
+        audio_buffer: AudioBuffer,
+        segment_store: SegmentStore,
+        diarization_callback,
+        interval: float = 30.0,
+        device: str = "cpu",
+        max_speakers: Optional[int] = None,
+    ):
+        self.hf_token = hf_token
+        self.audio_buffer = audio_buffer
+        self.segment_store = segment_store
+        self.diarization_callback = diarization_callback
+        self.interval = interval
+        self.device = device
+        self.max_speakers = max_speakers
+
+        self.is_running = False
+        self.thread = None
+        self._stop_event = threading.Event()
+        self.pipeline = None
+        
+        # Track last-processed segment count to only process new audio
+        self._last_segment_count = 0
+
+    def start(self):
+        if self.is_running:
+            return
+        self.is_running = True
+        self._stop_event.clear()
+        self._last_segment_count = 0
+        # Load pipeline and start thread
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.is_running = False
+        self._stop_event.set()
+        if self.thread:
+            self.thread.join(timeout=5.0)
+
+    def _load_pipeline(self):
+        """Load the pyannote speaker-diarization pipeline (called once in background thread)."""
+        if self.pipeline is not None:
+            return True
+        try:
+            if not HAS_PYANNOTE:
+                self.diarization_callback("[Diarization] pyannote.audio is not installed. Install with: pip install pyannote.audio torch")
+                return False
+            self.pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                token=self.hf_token,
+            )
+            if self.device == "cuda":
+                try:
+                    import torch
+                    self.pipeline.to(torch.device("cuda"))
+                except Exception:
+                    pass  # fall back to CPU
+            return True
+        except Exception as e:
+            self.diarization_callback(f"[Diarization] Failed to load pipeline: {e}")
+            return False
+
+    def _run_loop(self):
+        """Background loop: load pipeline, then periodically run diarization."""
+        # First, load the pipeline (may take 10-30 seconds)
+        self.diarization_callback("[Diarization] Loading pyannote pipeline (this may take a moment)...")
+        pipeline_ok = self._load_pipeline()
+        if not pipeline_ok:
+            self.diarization_callback("[Diarization] Pipeline load failed, diarization disabled.")
+            return
+        
+        self.diarization_callback("[Diarization] Pipeline loaded. Starting periodic speaker identification...")
+
+        while self.is_running:
+            try:
+                audio = self.audio_buffer.get_audio()
+                if len(audio) < self.audio_buffer.sample_rate * 3:  # need at least 3s
+                    self._stop_event.wait(self.interval)
+                    continue
+
+                # Only process if there are new segments to label
+                current_count = len(self.segment_store)
+                if current_count <= self._last_segment_count:
+                    self._stop_event.wait(self.interval)
+                    continue
+
+                waveform_np = audio.astype(np.float32) / 32768.0
+
+                # Run diarization
+                import torch
+                waveform_torch = torch.from_numpy(waveform_np).unsqueeze(0)
+
+                pipeline_kwargs = {
+                    "waveform": waveform_torch,
+                    "sample_rate": self.audio_buffer.sample_rate,
+                }
+                if self.max_speakers is not None:
+                    pipeline_kwargs["num_speakers"] = self.max_speakers
+
+                output = self.pipeline(pipeline_kwargs)
+
+                # pyannote 3.1 returns DiarizeOutput dataclass; access .speaker_diarization
+                if hasattr(output, "speaker_diarization"):
+                    annotation = output.speaker_diarization
+                else:
+                    annotation = output  # fallback: assume Annotation directly
+
+                # Extract results
+                results: List[Tuple[float, float, str]] = []
+                for turn, _, speaker in annotation.itertracks(yield_label=True):
+                    results.append((turn.start, turn.end, speaker))
+
+                # Fallback if yield_label returned nothing (rare edge case)
+                if not results:
+                    for turn, track in annotation.itertracks(yield_label=False):
+                        labels = annotation.get_labels(track)
+                        speaker = labels[0] if labels else "SPEAKER_UNKNOWN"
+                        results.append((turn.start, turn.end, speaker))
+
+                if not results:
+                    self._stop_event.wait(self.interval)
+                    continue
+
+                # Map speakers to segments
+                all_segments = self.segment_store.get_all()
+                labeled = map_speakers_to_segments(all_segments, results)
+
+                # Build index-based label updates
+                label_updates = []
+                for idx, seg in enumerate(labeled):
+                    if seg.speaker is not None:
+                        old_speaker = all_segments[idx].speaker
+                        if old_speaker is None or old_speaker != seg.speaker:
+                            label_updates.append((idx, seg.speaker))
+
+                if label_updates:
+                    self.segment_store.apply_speaker_labels(label_updates)
+                    self.diarization_callback((labeled, label_updates))
+
+                self._last_segment_count = current_count
+
+            except Exception as e:
+                self.diarization_callback(f"[Diarization] Error: {e}")
+
+            self._stop_event.wait(self.interval)
+
+
+# ------------------------------
 # Main Application Window
 # ------------------------------
 class MeetingRecorderApp:
@@ -383,6 +706,9 @@ class MeetingRecorderApp:
         self.recorder = None
         self.transcriber = None
         self.key_point_extractor = None
+        self.speaker_diarizer = None
+        self.segment_store = None
+        self.audio_buffer = None
         self.is_recording = False
         self.available_devices = []
         self.caption_lock = threading.Lock()
@@ -396,6 +722,7 @@ class MeetingRecorderApp:
         self.MAX_CAPTION_HISTORY_CHARS = 200000
         self.MAX_TEXT_AREA_CHARS = 5000
         self.MAX_KEY_POINTS_CHARS = 2000
+        self.MAX_SPEAKER_CHARS = 5000
         self.FLUSH_INTERVAL_MS = 200
         
         self._pending_lock = threading.Lock()
@@ -408,6 +735,7 @@ class MeetingRecorderApp:
         self._suspend_config_autosave = False
         self.apply_theme()
         self.apply_extractor_ui_state()
+        self.apply_diarize_ui_state()
         self.refresh_devices()
         
     def setup_ui(self):
@@ -511,6 +839,45 @@ class MeetingRecorderApp:
         self.extract_cfg.columnconfigure(2, weight=1)
         self.extract_cfg.columnconfigure(4, weight=1)
         
+        # Speaker Diarization config
+        self.diarize_cfg = ttk.LabelFrame(self.root, text="Speaker Diarization (pyannote.audio)", padding="8")
+        self.diarize_cfg.pack(fill=tk.X, padx=10, pady=(0, 5))
+
+        self.diarize_enabled_var = tk.BooleanVar(value=False)
+        self.diarize_enable_check = ttk.Checkbutton(
+            self.diarize_cfg,
+            text="Enable",
+            variable=self.diarize_enabled_var,
+            command=self.on_diarize_enable_toggled,
+        )
+        self.diarize_enable_check.grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
+
+        ttk.Label(self.diarize_cfg, text="HF Token:").grid(row=0, column=1, sticky=tk.W)
+        self.hf_token_var = tk.StringVar(value="")
+        self.hf_token_entry = ttk.Entry(self.diarize_cfg, textvariable=self.hf_token_var, width=30, show="*")
+        self.hf_token_entry.grid(row=0, column=2, sticky=tk.W, padx=(5, 10))
+
+        ttk.Label(self.diarize_cfg, text="Interval(s):").grid(row=0, column=3, sticky=tk.W)
+        self.diarize_interval_var = tk.StringVar(value="30")
+        self.diarize_interval_entry = ttk.Entry(self.diarize_cfg, textvariable=self.diarize_interval_var, width=8)
+        self.diarize_interval_entry.grid(row=0, column=4, sticky=tk.W, padx=(5, 10))
+
+        ttk.Label(self.diarize_cfg, text="Max Speakers:").grid(row=0, column=5, sticky=tk.W)
+        self.diarize_max_speakers_var = tk.StringVar(value="0")
+        self.diarize_max_speakers_entry = ttk.Entry(self.diarize_cfg, textvariable=self.diarize_max_speakers_var, width=5)
+        self.diarize_max_speakers_entry.grid(row=0, column=6, sticky=tk.W, padx=(5, 0))
+
+        ttk.Label(self.diarize_cfg, text="Device:").grid(row=0, column=7, sticky=tk.W, padx=(10, 0))
+        self.diarize_device_var = tk.StringVar(value="cpu")
+        self.diarize_device_combo = ttk.Combobox(
+            self.diarize_cfg,
+            textvariable=self.diarize_device_var,
+            values=["cpu", "cuda"],
+            state="readonly",
+            width=5,
+        )
+        self.diarize_device_combo.grid(row=0, column=8, sticky=tk.W, padx=(5, 0))
+
         # Buttons
         self.button_frame = ttk.Frame(self.root, padding="10")
         self.button_frame.pack(fill=tk.X)
@@ -551,6 +918,24 @@ class MeetingRecorderApp:
         self.points_frame.grid(row=0, column=1, sticky=tk.NSEW, padx=(5, 0), pady=(0, 5))
         self.key_points_area = scrolledtext.ScrolledText(self.points_frame, wrap=tk.WORD, font=("Arial", 10), height=8)
         self.key_points_area.pack(fill=tk.BOTH, expand=True)
+
+        # Speaker-labeled transcription area (below output row)
+        self.speaker_frame = ttk.LabelFrame(self.root, text="Speaker-labeled Transcription", padding="10")
+        self.speaker_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.speaker_text_area = scrolledtext.ScrolledText(
+            self.speaker_frame, wrap=tk.WORD, font=("Consolas", 10), height=6
+        )
+        self.speaker_text_area.pack(fill=tk.BOTH, expand=True)
+        # Define tags for speaker colors
+        self._speaker_colors = [
+            "#1f77b4", "#2ca02c", "#ff7f0e", "#d62728",
+            "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+        ]
+        for i, color in enumerate(self._speaker_colors):
+            self.speaker_text_area.tag_configure(f"speaker_{i}", foreground=color)
+        self.speaker_text_area.tag_configure("speaker_default", foreground="#555555")
+        # Start hidden by default (diarization is opt-in)
+        self.speaker_frame.pack_forget()
 
     def on_theme_toggled(self):
         self.apply_theme()
@@ -630,7 +1015,7 @@ class MeetingRecorderApp:
 
         self.status_label.configure(background=palette["panel_alt"], foreground=palette["text"])
 
-        text_widgets = [self.text_area, self.key_points_area]
+        text_widgets = [self.text_area, self.key_points_area, self.speaker_text_area]
         for widget in text_widgets:
             widget.configure(
                 background=palette["panel"],
@@ -643,7 +1028,7 @@ class MeetingRecorderApp:
                 relief=tk.FLAT,
             )
 
-        for frame in (self.text_frame, self.points_frame, self.extract_cfg):
+        for frame in (self.text_frame, self.points_frame, self.extract_cfg, self.diarize_cfg, self.speaker_frame):
             frame.configure(style="TLabelframe")
         
     def refresh_devices(self):
@@ -700,17 +1085,29 @@ class MeetingRecorderApp:
             self.full_transcription_text = ""
             self.caption_total_chars = 0
         self.key_points_area.delete(1.0, tk.END)
+        self.speaker_text_area.delete(1.0, tk.END)
         
-        self.transcriber = Transcriber(self.recorder, model_size=self.model_var.get(),
-                                       language=self.lang_var.get(), records_folder=self.records_folder,
-                                       whisper_device=self.whisper_device_var.get(),
-                                       local_files_only=self.whisper_local_only_var.get())
+        # Create segment store and audio buffer for diarization
+        self.segment_store = SegmentStore()
+        self.audio_buffer = AudioBuffer(max_duration=120.0, sample_rate=16000)
+        
+        self.transcriber = Transcriber(
+            self.recorder,
+            model_size=self.model_var.get(),
+            language=self.lang_var.get(),
+            records_folder=self.records_folder,
+            whisper_device=self.whisper_device_var.get(),
+            local_files_only=self.whisper_local_only_var.get(),
+            segment_store=self.segment_store,
+            audio_buffer=self.audio_buffer,
+        )
         self.transcriber.set_text_callback(self.append_text)
         self.transcriber.start()
 
         self.is_recording = True
         self.set_recording_layout(is_recording=True)
         self.ensure_key_point_extractor_state()
+        self.ensure_diarizer_state()
 
         if save_audio:
             base = self.recorder.get_base_filename()
@@ -742,12 +1139,43 @@ class MeetingRecorderApp:
         if self.key_point_extractor:
             self.key_point_extractor.stop()
             self.key_point_extractor = None
+        if self.speaker_diarizer:
+            self.speaker_diarizer.stop()
+            self.speaker_diarizer = None
         if self.recorder:
             wav_path = self.recorder.get_wav_path()
             self.recorder.stop()
             self.recorder = None
             if wav_path:
                 self.file_label_var.set(f"Saved: {wav_path} (and .txt)")
+        # Write final speaker-labeled transcripts to the text file
+        if self.segment_store is not None:
+            try:
+                labeled_segments = self.segment_store.get_all()
+                base = self.recorder.get_base_filename() if self.recorder else None
+                if labeled_segments and base:
+                    has_labels = any(s.speaker for s in labeled_segments)
+                    labeled_path = os.path.join(self.records_folder, base + "_labeled.txt")
+                    with open(labeled_path, "w", encoding="utf-8") as f:
+                        f.write(f"Speaker-labeled Transcription - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("=" * 50 + "\n\n")
+                        for seg in labeled_segments:
+                            if has_labels and seg.speaker:
+                                f.write(f"[{seg.speaker}] {seg.text.strip()}\n")
+                            else:
+                                f.write(f"{seg.text.strip()}\n")
+                    if has_labels:
+                        self.file_label_var.set(f"Saved: {base}.[wav,txt] + {base}_labeled.txt")
+            except Exception as e:
+                print(f"Error writing labeled transcript: {e}")
+        
+        if self.segment_store is not None:
+            self.segment_store.clear()
+            self.segment_store = None
+        if self.audio_buffer is not None:
+            self.audio_buffer.clear()
+            self.audio_buffer = None
+        
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
         self.device_combo.config(state="readonly")
@@ -761,6 +1189,7 @@ class MeetingRecorderApp:
             self.whisper_opt_frame,
             self.save_frame,
             self.extract_cfg,
+            self.diarize_cfg,
         ]
 
         if is_recording:
@@ -772,6 +1201,7 @@ class MeetingRecorderApp:
         self.whisper_opt_frame.pack(fill=tk.X, padx=10, before=self.button_frame)
         self.save_frame.pack(fill=tk.X, padx=10, before=self.button_frame)
         self.extract_cfg.pack(fill=tk.X, padx=10, pady=(0, 5), before=self.button_frame)
+        self.diarize_cfg.pack(fill=tk.X, padx=10, pady=(0, 5), before=self.button_frame)
     
     def append_text(self, text):
         with self.caption_lock:
@@ -840,6 +1270,11 @@ class MeetingRecorderApp:
             self.extract_prompt_var,
             self.extract_interval_var,
             self.extract_timeout_var,
+            self.diarize_enabled_var,
+            self.hf_token_var,
+            self.diarize_interval_var,
+            self.diarize_max_speakers_var,
+            self.diarize_device_var,
         ]
         for var in watched_vars:
             var.trace_add("write", self.on_config_ui_changed)
@@ -848,6 +1283,7 @@ class MeetingRecorderApp:
         if self._suspend_config_autosave:
             return
         self.apply_extractor_ui_state()
+        self.apply_diarize_ui_state()
         self.schedule_config_save()
 
     def schedule_config_save(self):
@@ -903,6 +1339,112 @@ class MeetingRecorderApp:
             self.key_point_extractor.stop()
             self.key_point_extractor = None
 
+    def on_diarize_enable_toggled(self):
+        self.apply_diarize_ui_state()
+        self.ensure_diarizer_state()
+        self.schedule_config_save()
+
+    def apply_diarize_ui_state(self):
+        enabled = self.diarize_enabled_var.get()
+        state = "normal" if enabled else "disabled"
+        self.hf_token_entry.config(state=state)
+        self.diarize_interval_entry.config(state=state)
+        self.diarize_max_speakers_entry.config(state=state)
+        self.diarize_device_combo.config(state=state)
+
+        if enabled:
+            try:
+                self.speaker_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+            except tk.TclError:
+                pass
+        else:
+            self.speaker_frame.pack_forget()
+
+    def get_diarization_interval(self):
+        try:
+            return max(10.0, float(self.diarize_interval_var.get()))
+        except (TypeError, ValueError):
+            return 30.0
+
+    def get_diarization_max_speakers(self):
+        try:
+            val = int(self.diarize_max_speakers_var.get())
+            return val if val > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def ensure_diarizer_state(self):
+        if not self.is_recording:
+            return
+
+        if not self.diarize_enabled_var.get():
+            if self.speaker_diarizer is not None:
+                self.speaker_diarizer.stop()
+                self.speaker_diarizer = None
+            return
+
+        if self.speaker_diarizer is not None:
+            return  # already running
+
+        hf_token = self.hf_token_var.get().strip()
+        if not hf_token:
+            self.append_diarization_results("[Diarization] HF Token not configured. Please enter your HuggingFace token.")
+            return
+        if not HAS_PYANNOTE:
+            self.append_diarization_results("[Diarization] pyannote.audio not installed. Run: pip install pyannote.audio torch")
+            return
+
+        self.speaker_diarizer = SpeakerDiarizer(
+            hf_token=hf_token,
+            audio_buffer=self.audio_buffer,
+            segment_store=self.segment_store,
+            diarization_callback=self.append_diarization_results,
+            interval=self.get_diarization_interval(),
+            device=self.diarize_device_var.get(),
+            max_speakers=self.get_diarization_max_speakers(),
+        )
+        self.speaker_diarizer.start()
+
+    def append_diarization_results(self, results):
+        """Called from SpeakerDiarizer thread with diarization updates."""
+        if isinstance(results, str):
+            # Status/error message
+            self.root.after(0, self._append_diarization_message, results)
+        elif isinstance(results, tuple):
+            # (labeled_segments, label_updates)
+            labeled, updates = results
+            self.root.after(0, self._rebuild_speaker_text_area, labeled, updates)
+
+    def _append_diarization_message(self, message):
+        self.status_var.set(message)
+
+    def _rebuild_speaker_text_area(self, labeled_segments, updates):
+        """Rebuild the speaker-labeled text area content with color-coded speaker tags."""
+        # Scroll position preservation
+        try:
+            scroll_pos = self.speaker_text_area.yview()
+        except Exception:
+            scroll_pos = (0.0, 1.0)
+
+        self.speaker_text_area.delete(1.0, tk.END)
+
+        for seg in labeled_segments:
+            if seg.speaker:
+                speaker_num = int(seg.speaker.split("_")[-1]) if seg.speaker.startswith("SPEAKER_") else 0
+                color_idx = speaker_num % len(self._speaker_colors)
+                tag = f"speaker_{color_idx}"
+                label = f"SPEAKER {speaker_num}"
+            else:
+                tag = "speaker_default"
+                label = "UNKNOWN"
+
+            timestamp = f"{seg.start:.1f}s"
+            line = f"[{timestamp}] [{label}] {seg.text.strip()}\n"
+            self.speaker_text_area.insert(tk.END, line, tag)
+
+        self.speaker_text_area.see(tk.END)
+        self._trim_widget(self.speaker_text_area, self.MAX_SPEAKER_CHARS)
+
     @staticmethod
     def _as_bool(value, default=False):
         if isinstance(value, bool):
@@ -933,6 +1475,11 @@ class MeetingRecorderApp:
             self.extract_prompt_var.set(str(data.get("extract_prompt", self.extract_prompt_var.get())))
             self.extract_interval_var.set(str(data.get("extract_interval", self.extract_interval_var.get())))
             self.extract_timeout_var.set(str(data.get("extract_timeout", self.extract_timeout_var.get())))
+            self.diarize_enabled_var.set(self._as_bool(data.get("diarization_enabled"), self.diarize_enabled_var.get()))
+            self.hf_token_var.set(str(data.get("hf_token", self.hf_token_var.get())))
+            self.diarize_interval_var.set(str(data.get("diarization_interval", self.diarize_interval_var.get())))
+            self.diarize_max_speakers_var.set(str(data.get("max_speakers", self.diarize_max_speakers_var.get())))
+            self.diarize_device_var.set(str(data.get("diarization_device", self.diarize_device_var.get())))
         except Exception as e:
             self.status_var.set(f"Config load failed: {e}")
 
@@ -948,6 +1495,11 @@ class MeetingRecorderApp:
             "extract_prompt": self.extract_prompt_var.get().strip(),
             "extract_interval": self.extract_interval_var.get().strip(),
             "extract_timeout": self.extract_timeout_var.get().strip(),
+            "diarization_enabled": self.diarize_enabled_var.get(),
+            "hf_token": self.hf_token_var.get().strip(),
+            "diarization_interval": self.diarize_interval_var.get().strip(),
+            "max_speakers": self.diarize_max_speakers_var.get().strip(),
+            "diarization_device": self.diarize_device_var.get().strip(),
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -1147,6 +1699,9 @@ class MeetingRecorderApp:
     def clear_text(self):
         self.text_area.delete(1.0, tk.END)
         self.key_points_area.delete(1.0, tk.END)
+        self.speaker_text_area.delete(1.0, tk.END)
+        if self.segment_store is not None:
+            self.segment_store.clear()
         with self.caption_lock:
             self.full_transcription_text = ""
             self.caption_total_chars = 0

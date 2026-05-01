@@ -7,5 +7,10 @@
   "ollama_model": "LiquidAI/lfm2.5-1.2b-instruct",
   "extract_prompt": "Extract brief key points from the meeting captions. Use concise bullet points and avoid repetition.",
   "extract_interval": "30",
-  "extract_timeout": "90"
+  "extract_timeout": "90",
+  "diarization_enabled": true,
+  "hf_token": "",
+  "diarization_interval": "30",
+  "max_speakers": "0",
+  "diarization_device": "cuda"
 }
