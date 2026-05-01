@@ -1,5 +1,5 @@
 """
-Simple Speaker Diarization Sample
+ASR with Speaker Diarization
 - Reads an MP4 file
 - Extracts audio to WAV (16kHz mono)
 - Transcribes with faster-whisper
@@ -8,7 +8,7 @@ Simple Speaker Diarization Sample
 - Prints colorized results
 
 Usage:
-    python speaker_diarization_sample.py path/to/your_video.mp4
+    python asr_speaker_diarization.py path/to/your_video.mp4 HF_TOKEN
 
 Requirements:
     pip install faster-whisper pyannote.audio torch numpy
