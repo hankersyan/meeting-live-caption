@@ -1,0 +1,16 @@
+{
+  "input_mode": "speaker",
+  "model": "iic/SenseVoiceSmall",
+  "language": "auto",
+  "device": "cuda",
+  "dark_mode": false,
+  "save_audio": true,
+  "extract_enabled": false,
+  "ollama_url": "http://localhost:11434",
+  "ollama_model": "LiquidAI/lfm2.5-1.2b-instruct",
+  "extract_prompt": "Extract 3-5 brief key points from the live meeting captions. Use concise bullet points and avoid repetition.",
+  "extract_interval": "20",
+  "extract_timeout": "90",
+  "simulate_realtime": true,
+  "file_path": ""
+}

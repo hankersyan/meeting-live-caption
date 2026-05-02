@@ -1,190 +1,176 @@
-# Meeting Live Caption - Usage Guide
+# Meeting Live Caption - Usage Guide (FunASR Edition)
 
 ## Getting Started
 
 ### Prerequisites
 
-Before using the application, ensure you have:
-- Windows operating system (required for WASAPI loopback)
-- Python 3.7 or higher installed
-- At least 2GB of free disk space for model downloads
-- A working audio system with at least one playback device
+- Windows operating system (for WASAPI loopback)
+- Python 3.8 or higher
+- [ffmpeg](https://ffmpeg.org/) installed and in PATH (for MP3/MP4 input)
+- At least 4GB free disk space for model downloads
 
-### Installation Steps
+### Installation
 
-1. **Download the Application**
-   - Clone the repository or download the source files
-   - Ensure you have the `main.py` file and any dependencies
-
-2. **Install Python Dependencies**
+1. **Install Python Dependencies**
    ```bash
-   pip install faster-whisper pyaudiowpatch numpy
+   pip install funasr modelscope numpy soundfile pyaudiowpatch
    ```
 
-3. **First-Time Setup**
-   - The first time you run the application, Whisper models will be downloaded automatically
-   - Download size varies by model (50MB for tiny, up to 3GB for large models)
+2. **First-Time Setup**
+   - FunASR models download automatically on first use
+   - Model sizes vary: ~220MB (paraformer-zh), ~234MB (SenseVoiceSmall)
    - Internet connection required for initial model download
 
-4. **Launch the Application**
+3. **Launch the Application**
    ```bash
-   python main.py
+   python app.py
    ```
 
 ## Interface Walkthrough
 
-### Main Window Components
+### 1. Input Source Selection
 
-1. **Control Panel (Top Section)**
-   - **Audio Device Dropdown**: Select the playback device to record from
-   - **Refresh Button**: Reload available audio devices
-   - **Model Selection**: Choose Whisper model size
-   - **Language Selection**: Set transcription language
+- **Microphone**: Record from a microphone. Select from available mic devices.
+- **Speaker (WASAPI)**: Record system audio (Teams, Zoom, browser, etc.). Select a WASAPI loopback device.
+- **File**: Transcribe a local audio file (WAV, MP3, MP4, FLAC, etc.). Browse or type the file path.
 
-2. **Options Panel**
-   - **Save Audio & Text Checkbox**: Enable/disable file saving
-   - **File Label**: Shows current file status
-   - **Open Records Folder Button**: Opens the output directory
+### 2. ASR Engine Configuration
 
-3. **Key Point Extraction (Ollama)**
-   - **Enable**: Turn periodic extraction on/off
-   - **URL**: Ollama API base URL (default: `http://localhost:11434`)
-   - **Model**: Ollama model name to use for extraction
-   - **Refresh(s)**: Interval in seconds between extraction runs
-   - **Prompt**: Instruction used to generate brief key points
+- **Model**: Choose the FunASR model:
+  - `paraformer-zh`: Best for Chinese meetings, supports speaker diarization
+  - `SenseVoiceSmall`: Multilingual (Chinese, English, Japanese, Korean, Cantonese)
+  - `paraformer-zh-streaming`: Streaming mode, low latency (~600ms), no speaker diarization
+  - `Fun-ASR-Nano-2512`: 31 languages, real-time capable
+- **Language**: Set based on model (auto-detected by default)
+- **Speaker Diarization**: Enable cam++ for automatic speaker identification
+- **Device**: CPU or CUDA (GPU)
 
-4. **Action Buttons**
-   - **Start Recording**: Begin audio capture and transcription
-   - **Stop Recording**: End recording session
-   - **Clear Text**: Clear the transcription display
+### 3. Save Options
 
-5. **Status Bar**
-   - Shows current application state and messages
+- **Save audio & text**: Saves WAV + TXT to `records/` folder
+- **Open Records Folder**: Quick access to output files
 
-6. **Transcription Display**
-   - Scrollable text area showing live transcription
+### 4. Key Point Extraction (Ollama)
 
-7. **Brief Key Points Display**
-   - Scrollable text area showing timestamped key-point summaries
+- **Enable**: Turn periodic extraction on/off
+- **URL**: Ollama API URL (default: `http://localhost:11434`)
+- **Model**: Ollama model name (e.g., `LiquidAI/lfm2.5-1.2b-instruct`)
+- **Refresh(s)**: Interval between extractions
+- **Timeout(s)**: Maximum wait time
+- **Prompt**: Instruction for key point generation
 
-## Detailed Usage Instructions
+### 5. Output Area
 
-### Step 1: Select Audio Device
-1. Click "Refresh" to populate the device list
-2. Select the audio device you want to record (typically your default playback device)
-3. The status bar will confirm your selection
+- **Left panel**: Live transcription with speaker color labels
+  - Format: `[SPK 0] Transcribed text`
+  - Each speaker has a unique color
+- **Right panel**: Timestamped key point summaries
 
-### Step 2: Configure Settings
-1. **Model Selection**: Choose based on your needs:
-   - Tiny: Fastest, lower accuracy
-   - Base: Good balance of speed and quality
-   - Small: Better quality, slower
-   - Medium/Large: Highest quality, slowest
-2. **Language Selection**: 
-   - Choose specific language for better accuracy
-   - Select "auto" for automatic language detection
+## Step-by-Step Usage
 
-### Step 3: Configure Output
-1. Check "Save audio & text" if you want to store recordings
-2. Files will be saved in the 'records' folder with timestamped names
-3. Click "Open Records Folder" to access saved files
+### Recording from System Audio (Speaker)
 
-### Step 4: Configure Key Point Extraction
-1. Enable key-point extraction if you want live summaries
-2. Set Ollama URL (local default: `http://localhost:11434`)
-3. Set model name (example: `LiquidAI/lfm2.5-1.2b-instruct`)
-4. Set refresh interval in seconds (example: `20`)
-5. Customize the extraction prompt if needed
+1. Click **Refresh** to populate WASAPI loopback devices
+2. Select your playback device from the dropdown
+3. Choose model (e.g., `paraformer-zh` with speaker diarization)
+4. Click **Start Recording**
+5. Play your meeting audio — transcription appears in real-time
+6. Click **Stop Recording** when done
 
-### Step 5: Start Recording
-1. Click "Start Recording"
-2. The application will begin capturing audio and transcribing speech
-3. Watch the status bar for progress indicators
-4. Live transcription appears in the text area
-5. Brief key points are updated periodically in the key-points area
+### Recording from Microphone
 
-### Step 6: Stop and Review
-1. Click "Stop Recording" when finished
-2. Check the 'records' folder for saved files
-3. Review both audio (WAV) and text (TXT) outputs
+1. Select **Microphone** input mode
+2. Click **Refresh** and select your mic device
+3. Choose model and click **Start Recording**
+4. Speak — transcription appears with speaker labels
 
-## Advanced Usage Tips
+### Transcribing a File
 
-### Model Selection Guidelines
-- **For meetings with clear speech**: Use 'base' or 'small'
-- **For multiple speakers or noisy environments**: Use 'medium' or 'large'
-- **For real-time applications**: Use 'tiny' or 'base'
-- **For high accuracy**: Use 'large-v2' or 'large-v3'
+1. Select **File** input mode
+2. Click **Browse...** to select an audio/video file
+3. Optionally check **Simulate realtime** for paced output
+4. Click **Start Recording**
+5. Transcription proceeds through the file
 
-### Language Settings
-- Specific language codes improve accuracy
-- Supported languages include: en, zh, es, fr, de, ja, ko, and many others
-- Auto-detection works well but may be slower
+### CLI Transcription
 
-### Performance Optimization
-- Close other CPU-intensive applications
-- Use smaller models for older systems
-- Ensure adequate RAM (8GB+ recommended)
-- SSD storage improves file I/O performance
+```bash
+# Transcribe with speaker diarization
+python asr_speaker_diarization.py meeting.wav
 
-## File Organization
+# Specify model and device
+python asr_speaker_diarization.py meeting.mp4 SenseVoiceSmall cuda
 
-The application creates the following in the 'records' folder:
-```
-records/
-├── meeting_20231201_143022.wav    # Audio recording
-├── meeting_20231201_143022.txt    # Transcription
-└── meeting_20231201_154511.wav    # Next recording...
+# Simple transcription
+python asr.py recording.mp3
 ```
 
-Each recording session creates a paired WAV and TXT file with identical timestamps.
+## Model Selection Guide
 
-## Troubleshooting Common Issues
+| Scenario | Recommended Model | Reason |
+|----------|------------------|--------|
+| Chinese meeting with multiple speakers | paraformer-zh | Best Chinese ASR + speaker diarization |
+| Multilingual meeting | SenseVoiceSmall | Supports zh, en, ja, ko, yue |
+| Need lowest latency | paraformer-zh-streaming | ~600ms streaming response |
+| Many languages | Fun-ASR-Nano-2512 | 31 languages + 7 Chinese dialects |
 
-### No Audio Devices Found
-- Check that your system has active audio playback devices
-- Ensure audio drivers are up to date
-- Restart the application after connecting new audio devices
+## Speaker Diarization
+
+- Uses FunASR's **cam++** speaker verification model
+- Automatically identifies and labels different speakers
+- Each speaker is color-coded in the transcription display
+- Supports up to 8 distinct speaker colors
+- Works best with non-streaming models
+- Only available when the diarization checkbox is enabled
+
+## Output Files
+
+Files are saved in the `records/` folder:
+- `meeting_YYYYMMDD_HHMMSS.wav` — Audio recording
+- `meeting_YYYYMMDD_HHMMSS.txt` — Transcription text
+
+## Configuration
+
+Settings are automatically saved to `config_funasr.json` and restored on next launch. This includes:
+- Input mode, model, language, device selection
+- Speaker diarization toggle
+- Dark mode preference
+- Ollama configuration
+- File path (for file input mode)
+
+## Troubleshooting
+
+### FunASR Not Installed
+```
+pip install funasr modelscope
+```
+
+### No WASAPI Devices Found
+- Ensure you have active audio playback devices
+- Install pyaudiowpatch: `pip install pyaudiowpatch`
+
+### Model Download Fails
+- Check internet connection
+- Set model mirror: `export MODELSCOPE_CACHE=/path/to/cache`
+
+### MP3/MP4 Input Not Working
+- Install ffmpeg and ensure it's in your PATH
+- `ffmpeg -version` should work from the command line
 
 ### Poor Transcription Quality
-- Try a larger Whisper model
-- Ensure the correct language is selected
-- Reduce background noise during recording
-- Speak clearly and at moderate pace
+- Try a different model (SenseVoiceSmall for multilingual)
+- Ensure correct language is selected
+- Use CUDA for larger models
 
-### Slow Performance
-- Close other applications to free up system resources
-- Use a smaller Whisper model
-- Check that your system meets minimum requirements
+### Speaker Diarization Inaccurate
+- Use non-streaming models for best results
+- Ensure microphone/audio quality is good
+- More distinct speakers are easier to separate
 
-### Missing Output Files
-- Verify that "Save audio & text" checkbox is enabled
-- Check that the 'records' folder has write permissions
-- Ensure sufficient disk space is available
+## Legacy Version
 
-### Application Freezes
-- Force close the application and restart
-- Update audio drivers
-- Check for conflicting audio applications
-
-## Best Practices
-
-### For Meetings
-- Position microphones appropriately if using microphone input
-- Test the setup before important meetings
-- Keep the application window visible during recording
-- Plan for adequate storage space for longer sessions
-
-### For Presentations
-- Use higher quality models for important presentations
-- Test the audio setup beforehand
-- Have backup recording methods available
-
-### File Management
-- Regularly archive old recordings
-- Organize recordings by date or topic
-- Back up important transcriptions separately
-
-## Keyboard Shortcuts
-
-While the GUI doesn't currently have keyboard shortcuts, you can add them by modifying the source code to bind key events to the start/stop/clear functions.
+The original faster-whisper version is still available:
+```bash
+pip install faster-whisper
+python main.py
+```

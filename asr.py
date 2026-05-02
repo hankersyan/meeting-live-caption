@@ -1,52 +1,70 @@
+"""
+FunASR-based Audio File Transcription
+
+Transcribe an audio file using FunASR AutoModel.
+
+Usage:
+    python asr.py <audio_file_path> [model_name] [device]
+
+Examples:
+    python asr.py recording.wav
+    python asr.py recording.mp3 paraformer-zh cpu
+    python asr.py recording.wav SenseVoiceSmall cuda
+"""
+
 import sys
-from faster_whisper import WhisperModel
+import os
 
-def transcribe_audio(file_path, model_size="large-v3", device="cuda", compute_type="float16"):
-    """
-    Transcribe an audio file using Whisper model
-    
-    Args:
-        file_path (str): Path to the audio file to transcribe
-        model_size (str): Size of the Whisper model to use
-        device (str): Device to run the model on ("cuda" or "cpu")
-        compute_type (str): Compute type ("float16", "int8", etc.)
-    """
-    # Initialize the model
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+from asr_engine import transcribe_file, FUNASR_AVAILABLE, MODEL_CONFIG
 
-    # Perform transcription
-    segments, info = model.transcribe(file_path, beam_size=5)
-    segments = list(segments)
 
-    print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
+def main():
+    if not FUNASR_AVAILABLE:
+        print("Error: FunASR is not installed. Run: pip install funasr")
+        sys.exit(1)
 
-    # Print the transcribed text
-    for segment in segments:
-        print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
-    
-    # Create output text file name
+    if len(sys.argv) < 2:
+        print(__doc__)
+        print(f"\nAvailable models: {', '.join(MODEL_CONFIG.keys())}")
+        print("Device options: cpu, cuda")
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    model_name = sys.argv[2] if len(sys.argv) > 2 else "iic/SenseVoiceSmall"
+    device = sys.argv[3] if len(sys.argv) > 3 else "cpu"
+
+    if not os.path.isfile(file_path):
+        print(f"Error: File not found: {file_path}")
+        sys.exit(1)
+
+    print(f"Transcribing: {file_path}")
+    print(f"Model: {model_name} | Device: {device}")
+    print("-" * 50)
+
+    results = transcribe_file(
+        file_path=file_path,
+        model_name=model_name,
+        language="en",
+        device=device,
+    )
+
+    for tr in results:
+        if tr.speaker:
+            print(f"[{tr.start_ms/1000:6.1f}s - {tr.end_ms/1000:6.1f}s] [{tr.speaker}] {tr.text}")
+        else:
+            print(tr.text)
+
+    # Save output
     output_file = file_path.rsplit('.', 1)[0] + '.txt'
-    
-    # Write transcription to text file
-    with open(output_file, 'w', encoding='utf-8') as f:
-        for segment in segments:
-            f.write(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}\n")
-    
+    transcribe_file(
+        file_path=file_path,
+        model_name=model_name,
+        language="en",
+        device=device,
+        output_path=output_file,
+    )
     print(f"\nTranscription saved to: {output_file}")
 
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python convert_wav_txt.py <audio_file_path> [model_size] [device] [compute_type]")
-        print("Example: python convert_wav_txt.py recording.wav large-v3 cuda float16")
-        print("Example: python convert_wav_txt.py recording.wav medium cpu int8")
-        print("\nAvailable model sizes: tiny, base, small, medium, large-v1, large-v2, large-v3")
-        print("Device options: cpu, cuda")
-        print("Compute types: float16, int8, int8_float16")
-        sys.exit(1)
-    
-    file_path = sys.argv[1]
-    model_size = sys.argv[2] if len(sys.argv) > 2 else "large-v3"
-    device = sys.argv[3] if len(sys.argv) > 3 else "cuda"
-    compute_type = sys.argv[4] if len(sys.argv) > 4 else "float16"
-    
-    transcribe_audio(file_path, model_size, device, compute_type)
+    main()

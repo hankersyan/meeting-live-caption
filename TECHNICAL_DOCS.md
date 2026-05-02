@@ -1,138 +1,169 @@
-# Meeting Live Caption - Technical Documentation
+# Meeting Live Caption - Technical Documentation (FunASR Edition)
 
 ## Overview
 
-This document describes the technical implementation of the Meeting Live Caption application, which provides real-time audio recording and transcription using Whisper AI.
+This document describes the technical implementation of the Meeting Live Caption application using FunASR for real-time speech recognition and speaker diarization.
 
 ## Architecture
 
-The application follows a multi-threaded design with four main components:
+The application follows a modular multi-threaded design with five main components:
 
-### 1. AudioRecorder Class
+### 1. AudioInputBase & Subclasses (`audio_input.py`)
 
-Handles WASAPI loopback recording with the following responsibilities:
-- Captures audio from the selected loopback device
-- Resamples audio to 16kHz for Whisper compatibility
-- Manages audio chunks for transcription
-- Saves audio data to WAV files in the 'records' folder
-- Uses threading for non-blocking audio capture
+Abstract base class for audio input with three concrete implementations:
+
+- **MicInput**: Captures audio from a standard microphone via pyaudio. Lists non-loopback input devices.
+- **SpeakerInput**: Captures system audio via WASAPI loopback using pyaudiowpatch. Lists loopback devices only.
+- **FileInput**: Reads audio files (WAV/MP3/MP4) via soundfile + ffmpeg. Supports real-time simulation mode.
+
+All subclasses:
+- Output 16kHz mono int16 numpy arrays to `audio_queue`
+- Support WAV file saving with separate write thread
+- Handle resampling from source rate to 16kHz
+- Use `stop_event` for clean shutdown
 
 Key features:
 - WASAPI loopback recording for system audio capture
-- Dynamic resampling from source rate to 16kHz
-- Chunk-based processing (2-second chunks by default)
+- Dynamic resampling via linear interpolation
+- Configurable chunk duration (default: 3s for Mic/Speaker, 5s for File)
 - Separate file writing thread to prevent blocking
-- Mono conversion for multi-channel audio
 
-### 2. Transcriber Class
+### 2. FunASRTranscriber (`asr_engine.py`)
 
-Performs real-time transcription using Whisper with these functions:
-- Retrieves audio chunks from the AudioRecorder queue
-- Applies Whisper model for speech-to-text conversion
-- Handles overlapping audio for continuity
-- Saves transcribed text to TXT files
-- Updates GUI with transcribed text
+Processes audio chunks from queue using FunASR AutoModel API:
+
+- **Non-streaming mode**: Uses `paraformer-zh` + `fsmn-vad` + `ct-punc` + `cam++` pipeline
+  - Produces `sentences` field with per-sentence speaker labels
+  - Delay ~3-5 seconds, acceptable for meetings
+  - Best speaker diarization quality
+- **Streaming mode**: Uses `paraformer-zh-streaming` with chunk-based processing
+  - 600ms display granularity, 300ms lookahead
+  - No speaker diarization support
+  - Near-real-time latency
 
 Key features:
-- Faster Whisper model integration
-- VAD (Voice Activity Detection) filtering
-- Overlap handling to maintain context
-- Temperature and beam search settings for quality
-- Multi-language support
+- `SpeakerRegistry` for cross-chunk speaker consistency (cosine similarity matching)
+- `TranscriptionResult` dataclass with text, speaker, timestamps
+- `transcribe_file()` standalone function for file transcription
+- Model config metadata (MODEL_CONFIG) for UI integration
 
-### 3. MeetingRecorderApp Class
+### 3. MeetingCaptionApp (`app.py`)
 
-Provides the GUI interface with these capabilities:
-- Audio device selection and management
-- Model and language selection
-- Start/stop recording controls
-- Live transcription display
-- File management and folder access
-- Threading coordination
+Main GUI application with tkinter:
 
-### 4. KeyPointExtractor Class
+- Input source selector (Mic/Speaker/File)
+- FunASR model selector with auto-configuration
+- Speaker diarization toggle
+- Speaker color-coded transcription display using tkinter Text tags
+- Key point extraction via Ollama (preserved from original)
+- Dark/light theme with modern styling
+- Config persistence to `config_funasr.json`
 
-Performs periodic LLM-based summarization of recent captions using Ollama:
-- Pulls recent live caption text from in-memory history
+### 4. KeyPointExtractor (`app.py`)
+
+Periodic LLM-based summarization of recent captions via Ollama:
+- Pulls recent caption text from in-memory history
 - Calls Ollama `/api/generate` with configurable URL, model, and prompt
-- Runs at a configurable refresh interval
-- Updates GUI with timestamped brief key-point summaries
-- Uses a dedicated thread and stop event for clean shutdown
+- Runs at configurable refresh interval
+- Updates GUI with timestamped summaries
+
+### 5. SpeakerRegistry (`asr_engine.py`)
+
+Maintains cross-chunk speaker identity consistency:
+- Stores speaker embedding vectors
+- Matches new embeddings via cosine similarity (default threshold: 0.65)
+- Uses exponential moving average to update stored embeddings
+- Thread-safe with lock protection
 
 ## Audio Processing Pipeline
 
 ```
-System Audio → WASAPI Loopback → AudioRecorder → Resample → Queue → Transcriber → Whisper → Text Output
-                                                                                       ↓
-                                                                            KeyPointExtractor → Ollama → Key Points
-                                            ↓
-                                        WAV File
+Audio Input (Mic/Speaker/File)
+    → 16kHz mono int16 numpy array
+    → audio_queue
+    → FunASRTranscriber
+        → Non-streaming: AutoModel(paraformer-zh + fsmn-vad + ct-punc + cam++)
+            → TranscriptionResult(text, speaker, timestamps)
+        → Streaming: AutoModel(paraformer-zh-streaming)
+            → TranscriptionResult(text, no speaker)
+    → GUI callback (speaker color-coded display)
+    → Text file save
+    → KeyPointExtractor → Ollama → Key Points
 ```
 
-The pipeline ensures low-latency processing through:
-- Small audio chunks (2 seconds)
-- Overlapping segments for context
-- Asynchronous file writing
-- Non-blocking UI updates
+## FunASR Model Integration
 
-## Key Technologies Used
+### AutoModel API
 
-- **PyAudioWPA** - Cross-platform audio I/O with WASAPI support
-- **Faster Whisper** - High-performance Whisper implementation
-- **NumPy** - Audio signal processing
-- **Tkinter** - GUI interface
-- **Threading** - Concurrent processing
+```python
+# Non-streaming with speaker diarization
+model = AutoModel(
+    model="paraformer-zh",
+    vad_model="fsmn-vad",
+    punc_model="ct-punc",
+    spk_model="cam++",
+    device="cpu",
+)
+result = model.generate(input=audio_float32, batch_size_s=300)
+# result[0]["text"] = full text
+# result[0]["sentences"] = [{"text": ..., "start": ms, "end": ms, "spk": int}]
+```
+
+### Streaming API
+
+```python
+model = AutoModel(model="paraformer-zh-streaming", device="cpu")
+cache = {}
+for chunk in audio_chunks:
+    res = model.generate(
+        input=chunk, cache=cache, is_final=False,
+        chunk_size=[0, 10, 5],
+        encoder_chunk_look_back=4,
+        decoder_chunk_look_back=1,
+    )
+```
+
+## Key Technologies
+
+- **FunASR**: Speech recognition, VAD, punctuation, speaker diarization
+- **cam++**: Speaker verification/embedding model (7.2M params)
+- **PyAudioWPA**: WASAPI loopback audio capture
+- **NumPy**: Audio signal processing
+- **Tkinter**: GUI framework
+- **Ollama**: Key point extraction
 
 ## Configuration Parameters
 
-### AudioRecorder
+### AudioInputBase
 - `sample_rate`: Target sample rate (default: 16000 Hz)
-- `chunk_duration`: Duration of audio chunks (default: 2.0 seconds)
+- `chunk_duration`: Duration of audio chunks (default: 3.0s)
 - `save_audio`: Whether to save audio files (default: True)
 
-### Transcriber
-- `model_size`: Whisper model size ("tiny", "base", "small", "medium", "large-v2", "large-v3")
-- `language`: Target language ("en", "zh", "es", etc. or "auto")
-- `beam_size`: Beam search parameter (default: 5)
-- `best_of`: Best-of parameter for beam search (default: 5)
+### FunASRTranscriber
+- `model_name`: FunASR model (paraformer-zh, SenseVoiceSmall, etc.)
+- `language`: Target language (auto, zh, en, ja, ko, yue)
+- `enable_diarization`: Enable speaker diarization (default: True)
+- `device`: cpu or cuda
 
-### KeyPointExtractor / Ollama
-- `ollama_url`: Base URL for Ollama API (default: `http://localhost:11434`)
-- `ollama_model`: Model name used for extraction (default: `LiquidAI/lfm2.5-1.2b-instruct`)
-- `extract_prompt`: Prompt template used to extract key points
-- `extract_interval`: Refresh interval in seconds (default: 20)
-
-## File Management
-
-All output files are stored in the 'records' subdirectory with timestamped filenames:
-- Audio files: `meeting_YYYYMMDD_HHMMSS.wav`
-- Text files: `meeting_YYYYMMDD_HHMMSS.txt`
-
-Each session creates a pair of corresponding files with the same timestamp.
-
-## Error Handling
-
-The application implements comprehensive error handling:
-- Device connection failures
-- Model loading errors
-- File I/O errors
-- Audio processing exceptions
-- Threading synchronization issues
+### KeyPointExtractor
+- `ollama_url`: Ollama API URL
+- `ollama_model`: Model name for extraction
+- `extract_interval`: Refresh interval in seconds
+- `extract_prompt`: Custom extraction prompt
 
 ## Performance Considerations
 
-- CPU-intensive transcription process
-- Memory usage scales with recording duration
-- Disk I/O optimization through separate writing thread
-- Adjustable model sizes for performance vs. quality trade-off
-
-## Platform Compatibility
-
-Currently designed for Windows due to WASAPI dependency. The core architecture could be adapted for other platforms using different audio backends (PortAudio, PulseAudio, etc.).
+- FunASR non-streaming processes 5s chunk in ~0.5-2s on CPU
+- cam++ speaker model is lightweight (7.2M params)
+- Streaming mode provides ~600ms latency
+- Speaker embedding comparison is negligible (vector dot product)
+- Memory usage scales with recording duration (capped at MAX_CAPTION_HISTORY_CHARS)
 
 ## Dependencies
 
-- `faster-whisper`: Fast Whisper implementation
-- `pyaudiowpatch`: PyAudio with WASAPI support
+- `funasr`: FunASR speech recognition toolkit
+- `modelscope`: Model download and management
+- `pyaudiowpatch`: WASAPI loopback audio capture
 - `numpy`: Numerical computations
+- `soundfile`: Audio file reading
 - Standard library: threading, queue, wave, tkinter, etc.
