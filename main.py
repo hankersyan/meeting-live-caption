@@ -554,7 +554,7 @@ class MeetingRecorderApp:
         self.output_row.columnconfigure(1, weight=2)
         self.output_row.rowconfigure(0, weight=1)
 
-        self.text_frame = ttk.LabelFrame(self.output_row, text="Live Transcription", padding="10")
+        self.text_frame = ttk.LabelFrame(self.output_row, text="Live Caption", padding="10")
         self.text_frame.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 5), pady=(0, 5))
         self.text_area = scrolledtext.ScrolledText(self.text_frame, wrap=tk.WORD, font=("Arial", 11))
         self.text_area.pack(fill=tk.BOTH, expand=True)
