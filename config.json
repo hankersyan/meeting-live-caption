@@ -1,6 +1,6 @@
 {
   "dark_mode": false,
-  "whisper_device": "cpu",
+  "whisper_device": "cuda",
   "whisper_local_files_only": true,
   "extract_enabled": true,
   "ollama_url": "http://localhost:11434",

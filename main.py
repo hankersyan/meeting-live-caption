@@ -187,6 +187,19 @@ class AudioRecorder:
         return self.wave_fullpath
 
 
+import re
+
+def format_line_breaks(text):
+    """Insert line breaks after sentence-ending punctuation for readability."""
+    text = text.strip()
+    if not text:
+        return ""
+    # Insert \n after sentence-ending punctuation (. ! ? 。！？) followed by whitespace or end of string
+    text = re.sub(r'([.!?。！？]+)(\s+)', r'\1\n', text)
+    # Ensure trailing newline so each chunk starts on a new line
+    return text + "\n"
+
+
 # ------------------------------
 # Transcription Thread (with text saving)
 # ------------------------------
@@ -305,7 +318,7 @@ class Transcriber:
                     full_text += segment.text
                 
                 if full_text.strip():
-                    full_text = full_text.strip() + " "
+                    full_text = format_line_breaks(full_text)
                     # Update UI
                     if self.text_callback:
                         self.text_callback(full_text)
