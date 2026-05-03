@@ -8,7 +8,7 @@ ASR with Speaker Diarization
 - Prints colorized results
 
 Usage:
-    python asr_speaker_diarization.py path/to/your_video.mp4 HF_TOKEN
+    python asr_speaker_diarization.py path/to/your_video.mp4 [HF_TOKEN] [--device cpu|cuda]
 
 Requirements:
     pip install faster-whisper pyannote.audio torch numpy
@@ -20,6 +20,7 @@ import os
 import subprocess
 import tempfile
 import json
+import argparse
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -123,7 +124,12 @@ def diarize(wav_path: str, hf_token: str, device: str = "cpu", num_speakers: Opt
         token=hf_token,
     )
     if device == "cuda":
-        pipeline.to(torch.device("cuda"))
+        import torch.cuda
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
+        else:
+            print("  WARNING: CUDA requested but not available, falling back to CPU")
+            device = "cpu"
 
     # Read WAV file into memory and pass as waveform dict
     # (bypasses pyannote's broken AudioDecoder)
@@ -283,12 +289,18 @@ def save_results(segments: List[TranscriptionSegment], output_path: str):
 # ------------------------------
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="ASR with Speaker Diarization",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("mp4_path", help="Path to input MP4 file")
+    parser.add_argument("hf_token", nargs="?", default="", help="HuggingFace token (or set HF_TOKEN env var)")
+    parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu", help="Compute device (default: cpu)")
+    args = parser.parse_args()
 
-    mp4_path = sys.argv[1]
-    hf_token = os.environ.get("HF_TOKEN", "")
+    mp4_path = args.mp4_path
+    device = args.device
+    hf_token = args.hf_token or os.environ.get("HF_TOKEN", "")
     if not hf_token:
         print("=" * 60)
         print("WARNING: No HF_TOKEN environment variable found.")
@@ -297,9 +309,7 @@ def main():
         print("         or:  export HF_TOKEN=hf_xxxxx  (Linux/Mac)")
         print("=" * 60)
 
-    # Optional: override via command-line
-    if len(sys.argv) >= 3:
-        hf_token = sys.argv[2]
+    # Optional: override via command-line is now handled by argparse
 
     # --- Step 1: Extract audio ---
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -308,7 +318,7 @@ def main():
         extract_audio(mp4_path, wav_path)
 
         # --- Step 2: Transcribe ---
-        segments = transcribe(wav_path, model_size="base", device="cpu")
+        segments = transcribe(wav_path, model_size="base", device=device)
 
         # Print raw transcription first
         print("Raw Transcription (no speaker labels):")
@@ -318,7 +328,7 @@ def main():
 
         # --- Step 3: Diarization ---
         if hf_token:
-            diarization_results = diarize(wav_path, hf_token, device="cpu")
+            diarization_results = diarize(wav_path, hf_token, device=device)
 
             # --- Step 4: Map speakers to transcription ---
             labeled = map_speakers(segments, diarization_results)
