@@ -385,7 +385,7 @@ class KeyPointExtractor:
 class MeetingRecorderApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Meeting Live Caption")
+        self.root.title("MLC")
         self.root.geometry("850x650")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -983,14 +983,36 @@ class MeetingRecorderApp:
             return "[Key point extraction skipped] Configure Ollama URL and model."
 
         timeout_seconds = self.get_extract_timeout()
-        prefers_chat_api = model.lower().startswith("qwen")
+        prefers_chat_api = model.lower().startswith("qwen") or model.lower().startswith("deepseek")
 
         def clean_ollama_text(text):
             if not isinstance(text, str):
                 return ""
             cleaned = text.strip()
+            # Handle Ollama think tags
             if "</think>" in cleaned:
                 cleaned = cleaned.split("</think>", 1)[1].strip()
+            # Handle DeepSeek-R1 function_calls wrapper
+            # DeepSeek-R1 often wraps responses in <function_calls>...</function_calls>
+            if "<function_calls>" in cleaned and "</function_calls>" in cleaned:
+                start_idx = cleaned.find("<function_calls>") + len("<function_calls>")
+                end_idx = cleaned.find("</function_calls>")
+                if start_idx < end_idx:
+                    cleaned = cleaned[start_idx:end_idx].strip()
+                # DeepSeek may also return JSON with name and arguments
+                try:
+                    import json
+                    parsed = json.loads(cleaned)
+                    if isinstance(parsed, dict) and "arguments" in parsed:
+                        cleaned = parsed["arguments"].strip()
+                    elif isinstance(parsed, list) and len(parsed) > 0:
+                        first_item = parsed[0]
+                        if isinstance(first_item, dict) and "arguments" in first_item:
+                            cleaned = first_item["arguments"].strip()
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            # Remove any remaining XML-like tags
+            cleaned = "".join([c for c in cleaned if c != "<" and c != ">"]).strip()
             return cleaned
 
         def parse_ollama_text(data):
