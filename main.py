@@ -17,15 +17,15 @@ import socket
 from datetime import datetime
 
 import numpy as np
-import pyaudiowpatch as pyaudio
+# pyaudiowpatch is imported lazily in refresh_devices() to avoid
+# blocking startup on workstations with slow PortAudio/DLL initialization
 
 # GUI
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import subprocess
 
-# Whisper
-from faster_whisper import WhisperModel
+# Whisper (lazy-imported in Transcriber to avoid startup delay)
 
 
 # ------------------------------
@@ -96,6 +96,7 @@ class AudioRecorder:
             
     def _record_loop(self):
         """Main recording loop."""
+        import pyaudiowpatch as pyaudio
         try:
             self.p = pyaudio.PyAudio()
             device_info = self.p.get_device_info_by_index(self.device_index)
@@ -271,6 +272,7 @@ class Transcriber:
             print(f"Error writing text file: {e}")
             
     def _transcribe_loop(self):
+        from faster_whisper import WhisperModel
         try:
             self.model = WhisperModel(
                 self.model_size,
@@ -660,18 +662,61 @@ class MeetingRecorderApp:
             frame.configure(style="TLabelframe")
         
     def refresh_devices(self):
-        try:
-            p = pyaudio.PyAudio()
-            self.available_devices = []
-            device_list = []
-            for device in p.get_loopback_device_info_generator():
-                name = device["name"]
-                idx = device["index"]
-                host_api = p.get_host_api_info_by_index(device["hostApi"])
-                host_name = host_api["name"]
-                self.available_devices.append((idx, name, host_name))
-                device_list.append(f"[{idx}] {name} ({host_name})")
-            p.terminate()
+        if self.is_recording:
+            return
+
+        # Show a status telling user we're scanning devices
+        self.status_var.set("Scanning audio devices...")
+        self.root.update_idletasks()
+
+        def _scan():
+            import pyaudiowpatch as pyaudio
+            try:
+                p = pyaudio.PyAudio()
+                devices = []
+                device_list = []
+                for device in p.get_loopback_device_info_generator():
+                    name = device["name"]
+                    idx = device["index"]
+                    host_api = p.get_host_api_info_by_index(device["hostApi"])
+                    host_name = host_api["name"]
+                    devices.append((idx, name, host_name))
+                    device_list.append(f"[{idx}] {name} ({host_name})")
+                p.terminate()
+                return devices, device_list, None
+            except Exception as e:
+                return [], [], str(e)
+
+        # Run the potentially slow PyAudio init in a background thread
+        # so the GUI is not blocked
+        self._device_scan_result = [None]  # use list as mutable holder
+
+        def _scan_thread():
+            devices, device_list, error = _scan()
+            self._device_scan_result[0] = (devices, device_list, error)
+
+        self._scan_complete = threading.Event()
+
+        def _scan_wrapper():
+            _scan_thread()
+            self._scan_complete.set()
+
+        threading.Thread(target=_scan_wrapper, daemon=True).start()
+
+        def _poll_scan():
+            if not self._scan_complete.is_set():
+                # Still scanning; poll again in 100ms
+                self.root.after(100, _poll_scan)
+                return
+
+            devices, device_list, error = self._device_scan_result[0]
+
+            if error:
+                self.status_var.set(f"Error detecting devices: {error}")
+                messagebox.showerror("Error", f"Failed to detect audio devices:\n{error}")
+                return
+
+            self.available_devices = devices
             if device_list:
                 self.device_combo["values"] = device_list
                 self.device_var.set(device_list[0])
@@ -679,9 +724,8 @@ class MeetingRecorderApp:
             else:
                 self.status_var.set("No WASAPI loopback devices found!")
                 messagebox.showwarning("No Devices", "No WASAPI loopback devices found.")
-        except Exception as e:
-            self.status_var.set(f"Error detecting devices: {e}")
-            messagebox.showerror("Error", f"Failed to detect audio devices:\n{e}")
+
+        self.root.after(50, _poll_scan)  # slight delay to let GUI paint first
     
     def on_device_selected(self, event=None):
         selection = self.device_combo.current()
